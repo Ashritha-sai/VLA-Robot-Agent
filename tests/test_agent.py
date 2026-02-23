@@ -9,7 +9,7 @@ import os
 import numpy as np
 
 from src.env import TableTopEnv
-from src.agent import VLAAgent, OPENAI_AVAILABLE, ANTHROPIC_AVAILABLE
+from src.agent import VLAAgent, OPENAI_AVAILABLE, ANTHROPIC_AVAILABLE, OLLAMA_AVAILABLE
 
 
 # ── Helpers ────────────────────────────────────────────────────────────
@@ -57,13 +57,13 @@ class TestAgentInit(unittest.TestCase):
     def test_init_openai(self):
         agent = VLAAgent(self.env, llm_provider="openai")
         self.assertEqual(agent.llm_provider, "openai")
-        self.assertEqual(agent.model, "gpt-4")
+        self.assertEqual(agent.model, "gpt-4o")
 
     @unittest.skipUnless(ANTHROPIC_AVAILABLE, "anthropic not installed")
     def test_init_anthropic(self):
         agent = VLAAgent(self.env, llm_provider="anthropic")
         self.assertEqual(agent.llm_provider, "anthropic")
-        self.assertEqual(agent.model, "claude-3-5-sonnet-20241022")
+        self.assertEqual(agent.model, "claude-sonnet-4-20250514")
 
     @unittest.skipUnless(OPENAI_AVAILABLE, "openai not installed")
     def test_custom_model(self):
@@ -621,6 +621,128 @@ class TestPromptIntegration(_PromptTestBase):
         self.assertNotEqual(p1, p2)
         self.assertIn("pick red block", p1)
         self.assertIn("stack all blocks", p2)
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  Test: New action dispatch (stack, sweep, rotate_gripper)
+# ══════════════════════════════════════════════════════════════════════
+
+class TestNewActionDispatch(unittest.TestCase):
+    """Test execute_action for new skill actions."""
+
+    def setUp(self):
+        np.random.seed(42)
+        self.env = _make_env()
+        self.agent = _make_agent(self.env)
+        if self.agent is None:
+            self.skipTest("No LLM provider installed")
+
+    def tearDown(self):
+        self.env.close()
+
+    def test_stack_action(self):
+        result = self.agent.execute_action({
+            "action": "stack",
+            "target": "red_block",
+            "target_object": "green_block",
+        })
+        self.assertIsInstance(result, bool)
+
+    def test_sweep_action(self):
+        result = self.agent.execute_action({
+            "action": "sweep",
+            "object_name": "red_block",
+            "target": "red_block",
+            "target_position": [0.6, 0.0, 0.07],
+        })
+        self.assertIsInstance(result, bool)
+
+    def test_rotate_gripper_action(self):
+        result = self.agent.execute_action({
+            "action": "rotate_gripper",
+            "angle": 0.3,
+        })
+        self.assertIsInstance(result, bool)
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  Test: Prompt includes new actions
+# ══════════════════════════════════════════════════════════════════════
+
+class TestPromptNewActions(_PromptTestBase):
+    """Test that new actions appear in the prompt."""
+
+    def _prompt(self, instruction="stack blocks"):
+        return self.agent._build_prompt(instruction, self.scene)
+
+    def test_contains_stack_action(self):
+        self.assertIn("stack(", self._prompt())
+
+    def test_contains_sweep_action(self):
+        self.assertIn("sweep(", self._prompt())
+
+    def test_contains_rotate_gripper_action(self):
+        self.assertIn("rotate_gripper(", self._prompt())
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  Test: Memory integration
+# ══════════════════════════════════════════════════════════════════════
+
+class TestMemoryIntegration(unittest.TestCase):
+    """Test memory is used by the agent."""
+
+    def setUp(self):
+        self.env = _make_env()
+        self.agent = _make_agent(self.env)
+        if self.agent is None:
+            self.skipTest("No LLM provider installed")
+
+    def tearDown(self):
+        self.env.close()
+
+    def test_agent_has_memory(self):
+        self.assertIsNotNone(self.agent.memory)
+
+    def test_memory_starts_empty(self):
+        self.assertEqual(self.agent.memory.turn_count, 0)
+
+    def test_prompt_includes_history_when_present(self):
+        self.agent.memory.add_interaction("pick red", "plan", True)
+        scene = self.env.get_scene_description()
+        prompt = self.agent._build_prompt("do more", scene)
+        self.assertIn("pick red", prompt)
+        self.assertIn("Conversation History", prompt)
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  Test: Ollama init
+# ══════════════════════════════════════════════════════════════════════
+
+class TestOllamaInit(unittest.TestCase):
+    """Test VLAAgent initialization with Ollama provider."""
+
+    def setUp(self):
+        self.env = _make_env()
+
+    def tearDown(self):
+        self.env.close()
+
+    @unittest.skipUnless(OLLAMA_AVAILABLE, "ollama not installed")
+    def test_init_ollama(self):
+        agent = VLAAgent(self.env, llm_provider="ollama")
+        self.assertEqual(agent.llm_provider, "ollama")
+        self.assertEqual(agent.model, "llama3.1")
+
+    @unittest.skipUnless(OLLAMA_AVAILABLE, "ollama not installed")
+    def test_ollama_no_api_key_needed(self):
+        agent = VLAAgent(self.env, llm_provider="ollama")
+        self.assertTrue(agent._api_key_set)
+
+    @unittest.skipUnless(OLLAMA_AVAILABLE, "ollama not installed")
+    def test_ollama_custom_model(self):
+        agent = VLAAgent(self.env, llm_provider="ollama", model="mistral")
+        self.assertEqual(agent.model, "mistral")
 
 
 if __name__ == "__main__":

@@ -2,8 +2,8 @@
 VLAAgent - Vision-Language-Action agent that uses LLMs for task planning.
 
 The agent observes the scene via TableTopEnv.get_scene_description(), builds
-a structured prompt, queries an LLM (OpenAI or Anthropic) for a JSON action
-plan, parses the plan, and (eventually) executes it through RobotSkills.
+a structured prompt, queries an LLM (OpenAI, Anthropic, or Ollama) for a JSON
+action plan, parses the plan, and executes it through RobotSkills.
 """
 
 import json
@@ -12,8 +12,9 @@ from typing import List, Dict, Optional
 import os
 
 from src.skills import RobotSkills
+from src.memory import ConversationMemory
 
-# Import LLM clients (we support both OpenAI and Anthropic)
+# Import LLM clients (we support OpenAI, Anthropic, and Ollama)
 try:
     from openai import OpenAI
     OPENAI_AVAILABLE = True
@@ -26,6 +27,12 @@ try:
 except ImportError:
     ANTHROPIC_AVAILABLE = False
 
+try:
+    import ollama as _ollama_module
+    OLLAMA_AVAILABLE = True
+except ImportError:
+    OLLAMA_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -34,22 +41,34 @@ class VLAAgent:
 
     # Default models per provider
     DEFAULT_MODELS = {
-        "openai": "gpt-4",
-        "anthropic": "claude-3-5-sonnet-20241022",
+        "openai": "gpt-4o",
+        "anthropic": "claude-sonnet-4-20250514",
+        "ollama": "llama3.1",
     }
 
-    def __init__(self, env, llm_provider: str = "openai", model: str = None):
+    def __init__(self, env, llm_provider: str = "openai", model: str = None,
+                 use_vision: bool = False):
         """
         Initialise the VLA agent.
 
         Args:
             env: TableTopEnv instance (must already be reset).
-            llm_provider: ``"openai"`` or ``"anthropic"``.
+            llm_provider: ``"openai"``, ``"anthropic"``, or ``"ollama"``.
             model: Model name override.  When *None* the provider default
                    from :pyattr:`DEFAULT_MODELS` is used.
+            use_vision: If True, use VisionModule for scene perception
+                        instead of get_scene_description().
         """
         self.env = env
         self.skills = RobotSkills(env)
+        self.memory = ConversationMemory()
+
+        # ── Vision ────────────────────────────────────────────────────
+        self.use_vision = use_vision
+        self._vision = None
+        if use_vision:
+            from src.vision import VisionModule
+            self._vision = VisionModule(env)
 
         # ── LLM client ────────────────────────────────────────────────
         self.llm_provider = llm_provider
@@ -79,10 +98,20 @@ class VLAAgent:
             self._api_key_set = api_key is not None
             self.model = model or self.DEFAULT_MODELS["anthropic"]
 
+        elif llm_provider == "ollama":
+            if not OLLAMA_AVAILABLE:
+                raise ImportError(
+                    "ollama package is not installed. "
+                    "Install it with: pip install ollama"
+                )
+            self.client = None  # ollama uses module-level functions
+            self._api_key_set = True  # no key needed for local Ollama
+            self.model = model or self.DEFAULT_MODELS["ollama"]
+
         else:
             raise ValueError(
                 f"Unknown LLM provider: {llm_provider!r}. "
-                "Supported providers: 'openai', 'anthropic'."
+                "Supported providers: 'openai', 'anthropic', 'ollama'."
             )
 
         logger.info("VLAAgent ready  provider=%s  model=%s",
@@ -121,6 +150,9 @@ class VLAAgent:
         ee = rs["end_effector_position"]
         gw = rs["gripper_width"]
 
+        # ── Conversation history ──────────────────────────────────────
+        history_text = self.memory.get_history_prompt()
+
         prompt = (
             "You are a robot task planner. You control a Franka Panda "
             "robot arm with a parallel-jaw gripper on a tabletop.\n\n"
@@ -140,8 +172,18 @@ class VLAAgent:
             "[x, y, z] position\n"
             "3. push(object_name, direction, distance) - Push an object "
             "in [dx, dy] direction for a given distance (metres)\n"
-            "4. go_home() - Return robot to home position\n\n"
+            "4. go_home() - Return robot to home position\n"
+            "5. stack(object_name, target_object_name) - Stack one object "
+            "on top of another\n"
+            "6. sweep(object_name, target_position) - Sweep/push an object "
+            "toward a target [x, y, z] position\n"
+            "7. rotate_gripper(angle) - Rotate the gripper by angle radians\n\n"
+        )
 
+        if history_text:
+            prompt += f"Conversation History:\n{history_text}\n\n"
+
+        prompt += (
             f'User Instruction: "{user_instruction}"\n\n'
 
             "Generate a JSON plan to accomplish this task.  Output ONLY "
@@ -211,6 +253,13 @@ class VLAAgent:
                 messages=[{"role": "user", "content": prompt}],
             )
             return response.content[0].text
+
+        elif self.llm_provider == "ollama":
+            response = _ollama_module.chat(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return response["message"]["content"]
 
     # ------------------------------------------------------------------ #
     #  Plan parsing                                                        #
@@ -307,6 +356,22 @@ class VLAAgent:
         elif action == "go_home":
             return self.skills.go_home()
 
+        elif action == "stack":
+            target_object = action_dict.get("target_object",
+                                            action_dict.get("target_object_name"))
+            return self.skills.stack(target, target_object)
+
+        elif action == "sweep":
+            target_pos = action_dict.get("target_position", target)
+            if isinstance(target_pos, str):
+                target_pos = self.env.get_object_position(target_pos).tolist()
+            obj_name = action_dict.get("object_name", target)
+            return self.skills.sweep(obj_name, target_pos)
+
+        elif action == "rotate_gripper":
+            angle = action_dict.get("angle", 0.0)
+            return self.skills.rotate_gripper(angle)
+
         else:
             raise ValueError(f"Unknown action: {action!r}")
 
@@ -380,7 +445,10 @@ class VLAAgent:
 
         # 1. Perceive
         print("[Perceiving scene...]")
-        scene = self.env.get_scene_description()
+        if self.use_vision and self._vision is not None:
+            scene = self._vision.get_scene_description_from_vision()
+        else:
+            scene = self.env.get_scene_description()
         self.env.print_scene()
 
         # 2. Prompt
@@ -404,10 +472,19 @@ class VLAAgent:
             return False
 
         # 5. Execute
-        return self.execute_plan(plan)
+        success = self.execute_plan(plan)
+
+        # 6. Record to memory
+        self.memory.add_interaction(
+            user_instruction,
+            plan.get("reasoning", ""),
+            success,
+        )
+
+        return success
 
     # ------------------------------------------------------------------ #
-    #  Convenience: observe → prompt → query  (no execution)               #
+    #  Convenience: observe -> prompt -> query  (no execution)             #
     # ------------------------------------------------------------------ #
 
     def get_plan(self, user_instruction: str) -> Dict:

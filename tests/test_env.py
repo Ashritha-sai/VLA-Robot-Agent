@@ -323,5 +323,111 @@ class TestClose(unittest.TestCase):
         env.close()  # should not raise
 
 
+class TestSpawnObject(unittest.TestCase):
+    """Test spawn_object with registries."""
+
+    def setUp(self):
+        self.env = TableTopEnv(gui=False)
+        self.env.reset()
+
+    def tearDown(self):
+        self.env.close()
+
+    def test_spawn_block(self):
+        body_id = self.env.spawn_object("test_block", "block", "yellow", [0.5, 0.0, 0.07])
+        self.assertIsInstance(body_id, int)
+        self.assertIn("test_block", self.env.objects)
+
+    def test_spawn_cylinder(self):
+        body_id = self.env.spawn_object("cyl1", "cylinder", "orange", [0.5, 0.2, 0.08])
+        self.assertIsInstance(body_id, int)
+
+    def test_spawn_sphere(self):
+        body_id = self.env.spawn_object("ball1", "sphere", "purple", [0.4, 0.1, 0.075])
+        self.assertIsInstance(body_id, int)
+
+    def test_spawn_obstacle(self):
+        body_id = self.env.spawn_object("wall1", "obstacle", "black", [0.7, 0.0, 0.10])
+        self.assertIsInstance(body_id, int)
+
+    def test_meta_populated(self):
+        self.env.spawn_object("test_obj", "block", "green", [0.5, 0.0, 0.07])
+        self.assertIn("test_obj", self.env.OBJECT_META)
+        self.assertEqual(self.env.OBJECT_META["test_obj"]["type"], "block")
+        self.assertEqual(self.env.OBJECT_META["test_obj"]["color"], "green")
+
+    def test_appears_in_scene(self):
+        self.env.spawn_object("yellow_block", "block", "yellow", [0.5, 0.0, 0.07])
+        scene = self.env.get_scene_description()
+        names = {o["name"] for o in scene["objects"]}
+        self.assertIn("yellow_block", names)
+
+    def test_unknown_type_raises(self):
+        with self.assertRaises(ValueError):
+            self.env.spawn_object("x", "rocket", "red", [0.5, 0.0, 0.07])
+
+    def test_unknown_color_raises(self):
+        with self.assertRaises(ValueError):
+            self.env.spawn_object("x", "block", "magenta", [0.5, 0.0, 0.07])
+
+    def test_duplicate_name_raises(self):
+        with self.assertRaises(ValueError):
+            self.env.spawn_object("red_block", "block", "red", [0.5, 0.0, 0.07])
+
+    def test_static_mass_zero(self):
+        """Static objects (mass=0) should not move."""
+        self.env.spawn_object("static_box", "block", "white", [0.5, 0.2, 0.07], mass=0)
+        pos_before = self.env.get_object_position("static_box").copy()
+        self.env.step(100)
+        pos_after = self.env.get_object_position("static_box")
+        np.testing.assert_array_almost_equal(pos_before, pos_after, decimal=3)
+
+
+class TestDynamicObjects(unittest.TestCase):
+    """Test add_object, remove_object, list_objects."""
+
+    def setUp(self):
+        self.env = TableTopEnv(gui=False)
+        self.env.reset()
+
+    def tearDown(self):
+        self.env.close()
+
+    def test_add_object_default_position(self):
+        body_id = self.env.add_object("new_block", "block", "yellow")
+        self.assertIn("new_block", self.env.objects)
+        self.assertIsInstance(body_id, int)
+
+    def test_add_object_custom_position(self):
+        self.env.add_object("custom", "sphere", "orange", position=[0.6, 0.1, 0.1])
+        pos = self.env.get_object_position("custom")
+        self.assertAlmostEqual(pos[0], 0.6, places=1)
+
+    def test_remove_object(self):
+        self.env.remove_object("red_block")
+        self.assertNotIn("red_block", self.env.objects)
+        self.assertNotIn("red_block", self.env.OBJECT_META)
+
+    def test_remove_nonexistent_raises(self):
+        with self.assertRaises(ValueError):
+            self.env.remove_object("nonexistent")
+
+    def test_list_objects(self):
+        objs = self.env.list_objects()
+        self.assertEqual(len(objs), 4)
+        names = {o["name"] for o in objs}
+        self.assertEqual(names, {"red_block", "green_block", "blue_block", "bowl"})
+
+    def test_list_objects_after_add(self):
+        self.env.add_object("extra", "cylinder", "purple")
+        objs = self.env.list_objects()
+        self.assertEqual(len(objs), 5)
+
+    def test_list_objects_after_remove(self):
+        self.env.remove_object("bowl")
+        objs = self.env.list_objects()
+        self.assertEqual(len(objs), 3)
+
+
 if __name__ == "__main__":
     unittest.main()

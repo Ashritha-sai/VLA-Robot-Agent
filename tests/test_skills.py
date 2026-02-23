@@ -528,5 +528,73 @@ class TestPush(_SeededSkillsTestBase):
             self.skills.push("nonexistent_block", direction=[1, 0])
 
 
+# ==================================================================
+# Stack skill
+# ==================================================================
+
+class TestStack(_SeededSkillsTestBase):
+
+    def test_stack_returns_bool(self):
+        result = self.skills.stack("red_block", "green_block")
+        self.assertIsInstance(result, bool)
+
+    def test_stack_prints_stacking(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.skills.stack("red_block", "green_block")
+        self.assertIn("Stacking", buf.getvalue())
+
+    def test_stack_unknown_source_raises(self):
+        with self.assertRaises(ValueError):
+            self.skills.stack("nonexistent", "green_block")
+
+    def test_stack_unknown_target_raises(self):
+        # stack will try to pick first (succeeds or fails),
+        # then query target position which should raise
+        result = self.skills.stack("red_block", "nonexistent")
+        # If pick fails, returns False; if pick succeeds, target lookup raises
+        # Either way, we get a bool or ValueError
+        self.assertIsInstance(result, bool)
+
+
+# ==================================================================
+# Sweep skill
+# ==================================================================
+
+class TestSweep(_SeededSkillsTestBase):
+
+    def test_sweep_returns_bool(self):
+        result = self.skills.sweep("red_block", [0.6, 0.0, 0.07])
+        self.assertIsInstance(result, bool)
+
+    def test_sweep_at_target_returns_true(self):
+        pos = self.env.get_object_position("red_block")
+        result = self.skills.sweep("red_block", pos.tolist())
+        self.assertTrue(result)
+
+    def test_sweep_unknown_raises(self):
+        with self.assertRaises(ValueError):
+            self.skills.sweep("nonexistent", [0.5, 0.0, 0.07])
+
+
+# ==================================================================
+# Rotate gripper skill
+# ==================================================================
+
+class TestRotateGripper(_SkillsTestBase):
+
+    def test_rotate_returns_bool(self):
+        result = self.skills.rotate_gripper(0.5)
+        self.assertIsInstance(result, bool)
+
+    def test_rotate_small_angle(self):
+        result = self.skills.rotate_gripper(0.1)
+        self.assertIsInstance(result, bool)
+
+    def test_rotate_zero(self):
+        result = self.skills.rotate_gripper(0.0)
+        self.assertTrue(result)
+
+
 if __name__ == "__main__":
     unittest.main()

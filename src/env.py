@@ -15,6 +15,55 @@ from typing import Dict, List, Tuple, Optional
 logger = logging.getLogger(__name__)
 
 
+# ---- Shape registry ----
+# Maps shape name -> (pybullet_geom, creation_kwargs)
+SHAPE_REGISTRY: Dict[str, Dict] = {
+    "block": {
+        "geom": "GEOM_BOX",
+        "col_kwargs": {"halfExtents": [0.02, 0.02, 0.02]},
+        "vis_kwargs": {"halfExtents": [0.02, 0.02, 0.02]},
+        "half_height": 0.02,
+    },
+    "cylinder": {
+        "geom": "GEOM_CYLINDER",
+        "col_kwargs": {"radius": 0.02, "height": 0.06},
+        "vis_kwargs": {"radius": 0.02, "length": 0.06},
+        "half_height": 0.03,
+    },
+    "sphere": {
+        "geom": "GEOM_SPHERE",
+        "col_kwargs": {"radius": 0.025},
+        "vis_kwargs": {"radius": 0.025},
+        "half_height": 0.025,
+    },
+    "bowl": {
+        "geom": "GEOM_CYLINDER",
+        "col_kwargs": {"radius": 0.1, "height": 0.05},
+        "vis_kwargs": {"radius": 0.1, "length": 0.05},
+        "half_height": 0.025,
+    },
+    "obstacle": {
+        "geom": "GEOM_BOX",
+        "col_kwargs": {"halfExtents": [0.05, 0.05, 0.05]},
+        "vis_kwargs": {"halfExtents": [0.05, 0.05, 0.05]},
+        "half_height": 0.05,
+    },
+}
+
+# ---- Colour registry (RGBA) ----
+COLOR_REGISTRY: Dict[str, List[float]] = {
+    "red":    [1.0, 0.0, 0.0, 1.0],
+    "green":  [0.0, 1.0, 0.0, 1.0],
+    "blue":   [0.0, 0.0, 1.0, 1.0],
+    "yellow": [1.0, 1.0, 0.0, 1.0],
+    "orange": [1.0, 0.5, 0.0, 1.0],
+    "purple": [0.5, 0.0, 0.5, 1.0],
+    "white":  [1.0, 1.0, 1.0, 1.0],
+    "gray":   [0.8, 0.8, 0.8, 1.0],
+    "black":  [0.1, 0.1, 0.1, 1.0],
+}
+
+
 class TableTopEnv:
     """PyBullet simulation environment for tabletop manipulation."""
 
@@ -30,27 +79,22 @@ class TableTopEnv:
     # Table geometry
     TABLE_SIZE = [1.0, 0.8, 0.05]          # half-extents used below
     TABLE_POSITION = [0.5, 0.0, 0.0]       # centre of table top surface
-    TABLE_HEIGHT = TABLE_SIZE[2]            # top surface z (half-height placed at z=0 → surface at 0.05)
+    TABLE_HEIGHT = TABLE_SIZE[2]            # top surface z (half-height placed at z=0 -> surface at 0.05)
 
     # Object geometry
-    BLOCK_HALF = 0.02                       # 0.04 m cube → half-extent 0.02
+    BLOCK_HALF = 0.02                       # 0.04 m cube -> half-extent 0.02
     BOWL_RADIUS = 0.1
     BOWL_HEIGHT = 0.05
 
-    # Block colours (RGBA)
+    # Block colours (RGBA) - kept for backward compat
     BLOCK_COLORS: Dict[str, List[float]] = {
         "red_block":   [1.0, 0.0, 0.0, 1.0],
         "green_block": [0.0, 1.0, 0.0, 1.0],
         "blue_block":  [0.0, 0.0, 1.0, 1.0],
     }
 
-    # Metadata used by get_scene_description to produce semantic labels
-    OBJECT_META: Dict[str, Dict[str, str]] = {
-        "red_block":   {"type": "block", "color": "red"},
-        "green_block": {"type": "block", "color": "green"},
-        "blue_block":  {"type": "block", "color": "blue"},
-        "bowl":        {"type": "bowl",  "color": "gray"},
-    }
+    # Metadata dynamically populated by spawn_object() / _spawn_blocks / _spawn_bowl
+    OBJECT_META: Dict[str, Dict[str, str]] = {}
 
     def __init__(self, gui: bool = True, time_step: float = 1.0 / 240.0):
         """
@@ -101,6 +145,8 @@ class TableTopEnv:
 
         # --- 8. Object tracking ---
         self.objects: Dict[str, int] = {}
+        # Instance-level metadata (shadows class-level OBJECT_META)
+        self.OBJECT_META: Dict[str, Dict[str, str]] = {}
 
         logger.info("TableTopEnv initialised (time_step=%.6f s)", time_step)
 
@@ -200,6 +246,7 @@ class TableTopEnv:
             p.removeBody(body_id)
             logger.debug("Removed object '%s' (id %d)", name, body_id)
         self.objects.clear()
+        self.OBJECT_META.clear()
 
         # --- Reset robot ---
         self._reset_robot()
@@ -219,6 +266,68 @@ class TableTopEnv:
     # Object spawning
     # ------------------------------------------------------------------
 
+    def spawn_object(
+        self,
+        name: str,
+        object_type: str,
+        color: str,
+        position: List[float],
+        mass: float = 0.1,
+    ) -> int:
+        """
+        Spawn an object from the registries and track it.
+
+        Args:
+            name: Unique semantic name (e.g. ``"red_block"``).
+            object_type: Key in ``SHAPE_REGISTRY`` (block, cylinder, sphere, bowl, obstacle).
+            color: Key in ``COLOR_REGISTRY`` (red, green, blue, ...).
+            position: ``[x, y, z]`` spawn position.
+            mass: Object mass in kg (0 = static).
+
+        Returns:
+            PyBullet body ID.
+
+        Raises:
+            ValueError: If *object_type* or *color* is unknown, or if
+                *name* is already in use.
+        """
+        if object_type not in SHAPE_REGISTRY:
+            raise ValueError(
+                f"Unknown object_type {object_type!r}. "
+                f"Available: {list(SHAPE_REGISTRY.keys())}"
+            )
+        if color not in COLOR_REGISTRY:
+            raise ValueError(
+                f"Unknown color {color!r}. "
+                f"Available: {list(COLOR_REGISTRY.keys())}"
+            )
+        if name in self.objects:
+            raise ValueError(
+                f"Object name {name!r} already exists. "
+                f"Current objects: {list(self.objects.keys())}"
+            )
+
+        shape_info = SHAPE_REGISTRY[object_type]
+        rgba = COLOR_REGISTRY[color]
+        geom_type = getattr(p, shape_info["geom"])
+
+        col_shape = p.createCollisionShape(geom_type, **shape_info["col_kwargs"])
+        vis_shape = p.createVisualShape(geom_type, **shape_info["vis_kwargs"], rgbaColor=rgba)
+
+        body_id = p.createMultiBody(
+            baseMass=mass,
+            baseCollisionShapeIndex=col_shape,
+            baseVisualShapeIndex=vis_shape,
+            basePosition=list(position),
+        )
+        p.changeDynamics(body_id, -1, lateralFriction=1.5)
+
+        self.objects[name] = body_id
+        self.OBJECT_META[name] = {"type": object_type, "color": color}
+        logger.debug("spawn_object '%s' (type=%s, color=%s, id=%d) at %s",
+                      name, object_type, color, body_id, position)
+        return body_id
+
     def _spawn_blocks(self) -> None:
         """
         Spawn three coloured cubes at random positions on the table.
@@ -228,9 +337,6 @@ class TableTopEnv:
         minimum separation so they don't overlap.
         """
         half = self.BLOCK_HALF  # 0.02
-
-        # Collision shape shared by all blocks (same geometry)
-        col_shape = p.createCollisionShape(p.GEOM_BOX, halfExtents=[half, half, half])
 
         # Margin from table edge and minimum spacing between block centres
         margin = 0.1
@@ -247,13 +353,14 @@ class TableTopEnv:
 
         placed_positions: List[np.ndarray] = []
 
-        for name, rgba in self.BLOCK_COLORS.items():
-            vis_shape = p.createVisualShape(
-                p.GEOM_BOX,
-                halfExtents=[half, half, half],
-                rgbaColor=rgba,
-            )
+        # Map block name -> color name
+        block_color_map = {
+            "red_block": "red",
+            "green_block": "green",
+            "blue_block": "blue",
+        }
 
+        for name, color_name in block_color_map.items():
             # Keep generating random (x, y) until we find one that doesn't
             # collide with already-placed blocks.
             for _ in range(100):
@@ -265,19 +372,8 @@ class TableTopEnv:
             else:
                 logger.warning("Could not find non-overlapping position for '%s'", name)
 
-            body_id = p.createMultiBody(
-                baseMass=0.1,  # 100 g
-                baseCollisionShapeIndex=col_shape,
-                baseVisualShapeIndex=vis_shape,
-                basePosition=[x, y, block_z],
-            )
-
-            # Increase lateral friction so the gripper can hold the block
-            p.changeDynamics(body_id, -1, lateralFriction=1.5)
-
-            self.objects[name] = body_id
+            self.spawn_object(name, "block", color_name, [x, y, block_z], mass=0.1)
             placed_positions.append(pos)
-            logger.debug("Spawned '%s' (id %d) at [%.3f, %.3f, %.3f]", name, body_id, x, y, block_z)
 
     def _spawn_bowl(self) -> None:
         """
@@ -285,34 +381,82 @@ class TableTopEnv:
 
         The bowl sits at the centre of the table.
         """
-        col_shape = p.createCollisionShape(
-            p.GEOM_CYLINDER,
-            radius=self.BOWL_RADIUS,
-            height=self.BOWL_HEIGHT,
-        )
-        vis_shape = p.createVisualShape(
-            p.GEOM_CYLINDER,
-            radius=self.BOWL_RADIUS,
-            length=self.BOWL_HEIGHT,
-            rgbaColor=[0.8, 0.8, 0.8, 1.0],  # light grey
-        )
-
         bowl_z = self.TABLE_SIZE[2] + self.BOWL_HEIGHT / 2.0
+        self.spawn_object(
+            "bowl", "bowl", "gray",
+            [self.TABLE_POSITION[0], self.TABLE_POSITION[1], bowl_z],
+            mass=0,
+        )
 
-        body_id = p.createMultiBody(
-            baseMass=0,  # static
-            baseCollisionShapeIndex=col_shape,
-            baseVisualShapeIndex=vis_shape,
-            basePosition=[
+    # ------------------------------------------------------------------
+    # Dynamic object management
+    # ------------------------------------------------------------------
+
+    def add_object(
+        self,
+        name: str,
+        object_type: str = "block",
+        color: str = "red",
+        position: Optional[List[float]] = None,
+        mass: float = 0.1,
+    ) -> int:
+        """
+        Add a new object to the scene at runtime.
+
+        Args:
+            name: Unique name for the object.
+            object_type: Shape type from ``SHAPE_REGISTRY``.
+            color: Colour from ``COLOR_REGISTRY``.
+            position: ``[x, y, z]``. Defaults to center of table at appropriate height.
+            mass: Object mass in kg.
+
+        Returns:
+            PyBullet body ID.
+        """
+        if position is None:
+            hh = SHAPE_REGISTRY.get(object_type, {}).get("half_height", 0.02)
+            position = [
                 self.TABLE_POSITION[0],
                 self.TABLE_POSITION[1],
-                bowl_z,
-            ],
-        )
+                self.TABLE_SIZE[2] + hh,
+            ]
+        body_id = self.spawn_object(name, object_type, color, position, mass)
+        # Let it settle
+        for _ in range(20):
+            p.stepSimulation()
+        return body_id
 
-        self.objects["bowl"] = body_id
-        logger.debug("Spawned bowl (id %d) at [%.3f, %.3f, %.3f]",
-                      body_id, self.TABLE_POSITION[0], self.TABLE_POSITION[1], bowl_z)
+    def remove_object(self, name: str) -> None:
+        """
+        Remove a tracked object from the simulation.
+
+        Args:
+            name: Object name to remove.
+
+        Raises:
+            ValueError: If *name* is not a tracked object.
+        """
+        if name not in self.objects:
+            raise ValueError(
+                f"Object '{name}' not found. Available: {list(self.objects.keys())}"
+            )
+        body_id = self.objects.pop(name)
+        self.OBJECT_META.pop(name, None)
+        p.removeBody(body_id)
+        logger.debug("Removed object '%s' (id %d)", name, body_id)
+
+    def list_objects(self) -> List[Dict[str, str]]:
+        """
+        Return a list of all tracked objects with their metadata.
+
+        Returns:
+            List of dicts with keys ``name``, ``type``, ``color``.
+        """
+        result = []
+        for name in self.objects:
+            meta = self.OBJECT_META.get(name, {"type": "unknown", "color": "unknown"})
+            result.append({"name": name, "type": meta["type"], "color": meta["color"]})
+        return result
 
     # ------------------------------------------------------------------
     # Robot helpers
