@@ -1,0 +1,15 @@
+robot:
+  name: "franka_panda"
+  ee_link_index: 11
+  arm_joints: [0, 1, 2, 3, 4, 5, 6]
+  gripper_joints: [9, 10]
+
+environment:
+  table_size: [1.0, 0.8, 0.05]
+  table_position: [0.5, 0.0, 0.0]
+  block_size: 0.04
+  bowl_radius: 0.1
+
+simulation:
+  time_step: 0.004167  # 240 Hz
+  gravity: -9.81
