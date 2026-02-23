@@ -22,8 +22,8 @@ Embodied AI demonstration using LLMs to control a simulated Franka Panda robot a
 
 ```bash
 # Clone the repository
-git clone <repo-url>
-cd vla_robot_agent
+git clone https://github.com/Ashritha-sai/VLA-Robot-Agent.git
+cd VLA-Robot-Agent
 
 # Create a virtual environment (recommended)
 python -m venv venv
@@ -133,7 +133,7 @@ For the full API reference see [`docs/API.md`](docs/API.md).
 ## Project Structure
 
 ```
-vla_robot_agent/
+VLA-Robot-Agent/
 |-- src/
 |   |-- __init__.py
 |   |-- env.py             # PyBullet simulation environment
@@ -149,12 +149,15 @@ vla_robot_agent/
 |   |-- demo_basic.py      # Pick-and-place without LLM
 |   |-- demo_llm.py        # LLM-guided task execution
 |   +-- test_no_llm.py     # Hardcoded plan execution
+|-- configs/
+|   +-- robot_config.yaml  # Robot configuration
 |-- docs/
 |   |-- ARCHITECTURE.md    # Technical architecture deep-dive
 |   +-- API.md             # Full API reference
 |-- main.py                # Interactive CLI entry point
 |-- requirements.txt
 |-- CONTRIBUTING.md
+|-- LICENSE
 +-- README.md
 ```
 

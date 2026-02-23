@@ -36,3 +36,12 @@ Thumbs.db
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Testing
+.pytest_cache/
+htmlcov/
+.coverage
+.tox/
+
+# Claude Code
+.claude/

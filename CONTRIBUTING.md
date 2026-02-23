@@ -4,8 +4,8 @@
 
 ```bash
 # Clone and install
-git clone <repo-url>
-cd vla_robot_agent
+git clone https://github.com/Ashritha-sai/VLA-Robot-Agent.git
+cd VLA-Robot-Agent
 python -m venv venv
 source venv/bin/activate          # Linux/macOS
 venv\Scripts\activate             # Windows
